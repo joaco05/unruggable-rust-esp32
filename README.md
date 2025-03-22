@@ -1,6 +1,6 @@
 # ESP32 Solana Hardware Signer
 
-![ESP32 Signer](https://github.com/username/unruggable-rust-esp32/icon.png)
+![ESP32 Signer](https://github.com/hogyzen12/unruggable-rust-esp32/blob/master/icon.png)
 
 
 A hardware-based approach to secure Solana transaction signing using an ESP32 microcontroller. This project aims to provide an affordable yet secure alternative to expensive hardware wallets for signing Solana blockchain transactions.
@@ -13,13 +13,6 @@ This project consists of two main components:
 2. **Host Applications**: Programs to interface with the ESP32 hardware signer, implemented in Rust, Go, and JavaScript.
 
 The ESP32 acts as a secure element that never exposes the private key, requiring physical interaction (button press) to authorize transaction signing.
-
-## Security Features
-
-- **Physical Confirmation Required**: Transactions can only be signed when the user physically presses the BOOT button on the ESP32, preventing remote or automated transaction signing.
-- **Private Key Isolation**: The private key is generated on the device and never leaves it, similar to commercial hardware wallets.
-- **Non-Extractable Keys**: Keys are stored in the ESP32's non-volatile storage (NVS) and cannot be extracted through software alone.
-- **Open Source**: All code is open-source, allowing community review and verification.
 
 ## How It Works
 
