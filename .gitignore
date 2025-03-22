@@ -1,0 +1,5 @@
+/.vscode
+/.embuild
+/target
+/Cargo.lock
+/solana-transaction-builder/js/node_modules
