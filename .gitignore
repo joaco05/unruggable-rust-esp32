@@ -3,3 +3,9 @@
 /target
 /Cargo.lock
 /solana-transaction-builder/js/node_modules
+esp32-solana-signer/.DS_Store
+solana-transaction-builder/.DS_Store
+solana-transaction-builder/rust/solana-tx-signer/.DS_Store
+solana-transaction-builder/rust/.DS_Store
+.DS_Store
+folders.txt
