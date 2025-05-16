@@ -75,7 +75,7 @@ fn main() -> anyhow::Result<()> {
                 let ch = byte[0] as char;
                 if ch == '\n' {
                     let input = buffer.trim();
-                    if input == "GET_PUBKEY" {  // Changed this line - removed the \n
+                    if input == "GET_PUBKEY" {
                         // During pubkey request: Double flash
                         for _ in 0..2 {
                             led.set_high()?;
@@ -84,13 +84,9 @@ fn main() -> anyhow::Result<()> {
                             esp_idf_svc::hal::delay::FreeRtos::delay_ms(150);
                         }
                         
-                        // Send response in the format our protocol expects
-                        let response = format!("PUBKEY:{}", pubkey_base58);
-                        send_response(&mut uart, &response)?;
-                    } else if input.starts_with("SIGN:") {
-                        // Extract the base64 message after "SIGN:"
-                        let base64_message = &input[5..];
-                        match base64::engine::general_purpose::STANDARD.decode(base64_message) {
+                        send_response(&mut uart, &pubkey_base58)?;
+                    } else if !input.is_empty() {
+                        match base64::engine::general_purpose::STANDARD.decode(input) {
                             Ok(message_bytes) => {
                                 // Waiting for button: Fast blinking pattern
                                 let mut led_state = false;
@@ -112,7 +108,7 @@ fn main() -> anyhow::Result<()> {
                                 let signature_bytes = signature.to_bytes();
                                 let base64_signature = base64::engine::general_purpose::STANDARD.encode(&signature_bytes);
                                 
-                                // Success: Triple flash with longer third pulse
+                                // Success: Triple flash with longer third pulse (flash, flash, flaaaash)
                                 led.set_high()?;
                                 esp_idf_svc::hal::delay::FreeRtos::delay_ms(150);
                                 led.set_low()?;
@@ -128,9 +124,8 @@ fn main() -> anyhow::Result<()> {
                                 esp_idf_svc::hal::delay::FreeRtos::delay_ms(450); // 3x longer
                                 led.set_low()?;
                                 
-                                // Send the response in the format our protocol expects
-                                let response = format!("SIGNATURE:{}", base64_signature);
-                                send_response(&mut uart, &response)?;
+                                // Send the response
+                                send_response(&mut uart, &base64_signature)?;
                             }
                             Err(_) => {
                                 // Error: Rapid blinking
@@ -140,13 +135,8 @@ fn main() -> anyhow::Result<()> {
                                     led.set_low()?;
                                     esp_idf_svc::hal::delay::FreeRtos::delay_ms(100);
                                 }
-                                send_response(&mut uart, "ERROR:Invalid base64 encoding")?;
                             }
                         }
-                    } else if !input.is_empty() {
-                        // Unknown command - log what we received for debugging
-                        println!("Received unknown command: '{}'", input);
-                        send_response(&mut uart, "ERROR:Unknown command")?;
                     }
                     buffer.clear();
                 } else {

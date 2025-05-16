@@ -1,29 +1,31 @@
 use solana_sdk::{
-    message::Message,
     pubkey::Pubkey,
     signature::Signature,
-    system_instruction::{self, SystemInstruction},
-    transaction::Transaction,
-    instruction::CompiledInstruction,
-    message::MessageHeader,
+    transaction::VersionedTransaction,
+    message::{Message, VersionedMessage},
+    system_instruction,
+    commitment_config::CommitmentConfig,
 };
 use solana_client::rpc_client::RpcClient;
 use serialport::SerialPort;
 use std::str::FromStr;
 use base64::Engine;
 use anyhow::Result;
-use bincode;
 
+// Constants for serial port, RPC URL, recipient public key, and lamports to send
+const SERIAL_PORT: &str = "/dev/tty.usbserial-0001";
+const RPC_URL: &str = "api";
 const RECIPIENT_PUBLIC_KEY: &str = "6tBou5MHL5aWpDy6cgf3wiwGGK2mR8qs68ujtpaoWrf2";
-const LAMPORTS_TO_SEND: u64 = 1_000_000; // 0.001 SOL
-const SERIAL_PORT: &str = "/dev/tty.usbserial-0001"; // Update if USB-C port changes this
-const RPC_URL: &str = "https://special-blue-fog.solana-mainnet.quiknode.pro/d009d548b4b9dd9f062a8124a868fb915937976c/";
+const LAMPORTS_TO_SEND: u64 = 1_000_000;
 
+/// Retrieves the public key from the ESP32 board via serial communication
 fn get_esp32_public_key(port: &mut Box<dyn SerialPort>) -> Result<Pubkey> {
+    // Send "GET_PUBKEY" with a newline as expected by ESP32
     port.write_all("GET_PUBKEY\n".as_bytes())?;
     port.flush()?;
     println!("Requested public key from ESP32");
 
+    // Read the response until newline
     let mut buffer = String::new();
     let mut byte = [0u8; 1];
     let mut timeout_count = 0;
@@ -31,7 +33,9 @@ fn get_esp32_public_key(port: &mut Box<dyn SerialPort>) -> Result<Pubkey> {
         match port.read(&mut byte) {
             Ok(1) => {
                 let ch = byte[0] as char;
-                if ch == '\n' { break; }
+                if ch == '\n' {
+                    break;
+                }
                 buffer.push(ch);
             }
             Ok(0) => {
@@ -45,46 +49,26 @@ fn get_esp32_public_key(port: &mut Box<dyn SerialPort>) -> Result<Pubkey> {
             Ok(n) => unreachable!("Unexpected read size: {}", n),
         }
     }
-    let pubkey_str = buffer.trim();
-    if pubkey_str.is_empty() {
-        return Err(anyhow::anyhow!("No public key received from ESP32"));
+    let response = buffer.trim();
+    // Check for the expected "PUBKEY:" prefix and extract the base58 public key
+    if response.starts_with("PUBKEY:") {
+        let pubkey_str = &response[7..]; // Skip "PUBKEY:"
+        println!("Received ESP32 public key: {}", pubkey_str);
+        Pubkey::from_str(pubkey_str).map_err(|e| anyhow::anyhow!("Failed to parse public key: {}", e))
+    } else {
+        Err(anyhow::anyhow!("Invalid response from ESP32: {}", response))
     }
-    println!("Received ESP32 public key: {}", pubkey_str);
-    Pubkey::from_str(pubkey_str).map_err(Into::into)
 }
 
-fn create_unsigned_transaction(client: &RpcClient, esp32_pubkey: Pubkey) -> Result<Transaction> {
-    let recipient_pubkey = Pubkey::from_str(RECIPIENT_PUBLIC_KEY)?;
-    let system_program_id = solana_sdk::system_program::id();
-    
-    let account_keys = vec![esp32_pubkey, recipient_pubkey, system_program_id];
-    
-    let instructions = vec![CompiledInstruction {
-        program_id_index: 2,
-        accounts: vec![0, 1],
-        data: bincode::serialize(&SystemInstruction::Transfer { lamports: LAMPORTS_TO_SEND })?,
-    }];
-    
-    let recent_blockhash = client.get_latest_blockhash()?;
-    let message = Message {
-        header: MessageHeader {
-            num_required_signatures: 1,
-            num_readonly_signed_accounts: 0,
-            num_readonly_unsigned_accounts: 1,
-        },
-        account_keys,
-        recent_blockhash,
-        instructions,
-    };
-    
-    Ok(Transaction::new_unsigned(message))
-}
-
-fn send_to_esp32_and_get_signature(port: &mut Box<dyn SerialPort>, message: &str) -> Result<String> {
-    port.write_all((message.to_string() + "\n").as_bytes())?;
+/// Sends the transaction message to the ESP32 and retrieves the signature
+fn send_to_esp32_and_get_signature(port: &mut Box<dyn SerialPort>, base64_message: &str) -> Result<String> {
+    let sign_command = format!("SIGN:{}", base64_message);
+    port.write_all(sign_command.as_bytes())?;
+    port.write_all(b"\n")?;
     port.flush()?;
-    println!("Sent to ESP32: {}", message);
+    println!("Sent to ESP32: {}", sign_command);
 
+    // Rest of your function remains unchanged
     let mut buffer = String::new();
     let mut byte = [0u8; 1];
     let mut timeout_count = 0;
@@ -92,7 +76,9 @@ fn send_to_esp32_and_get_signature(port: &mut Box<dyn SerialPort>, message: &str
         match port.read(&mut byte) {
             Ok(1) => {
                 let ch = byte[0] as char;
-                if ch == '\n' { break; }
+                if ch == '\n' {
+                    break;
+                }
                 buffer.push(ch);
             }
             Ok(0) => {
@@ -106,34 +92,75 @@ fn send_to_esp32_and_get_signature(port: &mut Box<dyn SerialPort>, message: &str
             Ok(n) => unreachable!("Unexpected read size: {}", n),
         }
     }
-    let response = buffer.trim().to_string();
-    if response.is_empty() {
-        return Err(anyhow::anyhow!("No signature received from ESP32"));
+    let response = buffer.trim();
+    if response.starts_with("SIGNATURE:") {
+        let base64_signature = &response[10..];
+        println!("Received signature from ESP32: {}", base64_signature);
+        Ok(base64_signature.to_string())
+    } else {
+        Err(anyhow::anyhow!("Invalid response from ESP32: {}", response))
     }
-    println!("Received from ESP32: {}", response);
-    Ok(response)
 }
 
 fn main() -> Result<()> {
+    // Initialize the Solana RPC client
     let client = RpcClient::new(RPC_URL.to_string());
+
+    // Open the serial port to communicate with the ESP32
     let mut port = serialport::new(SERIAL_PORT, 115_200)
         .timeout(std::time::Duration::from_secs(1))
         .open()?;
 
+    // Get the ESP32 public key, which will be the fee payer and signer
     let esp32_pubkey = get_esp32_public_key(&mut port)?;
-    let mut transaction = create_unsigned_transaction(&client, esp32_pubkey)?;
-    
-    let message_bytes = transaction.message.serialize();
-    let base64_message = base64::engine::general_purpose::STANDARD.encode(&message_bytes);
-    println!("Serialized Transaction Message (Base64): {}", base64_message);
 
-    let base64_signature = send_to_esp32_and_get_signature(&mut port, &base64_message)?;
+    // Parse the recipient public key from the constant string
+    let recipient_pubkey = Pubkey::from_str(RECIPIENT_PUBLIC_KEY)?;
+
+    // Fetch the latest blockhash with finalized commitment
+    let (recent_blockhash, _last_valid_slot) = client.get_latest_blockhash_with_commitment(CommitmentConfig::finalized())?;
+
+    // Create a transfer instruction
+    let instruction = system_instruction::transfer(&esp32_pubkey, &recipient_pubkey, LAMPORTS_TO_SEND);
+    let mut message = Message::new(&[instruction], Some(&esp32_pubkey));
+    message.recent_blockhash = recent_blockhash;
+
+    // Create a VersionedTransaction with the message and an empty signature slot
+    let mut transaction = VersionedTransaction {
+        signatures: vec![Signature::default(); message.header.num_required_signatures as usize],
+        message: VersionedMessage::Legacy(message),
+    };
+
+    // Print the number of signatures expected for verification
+    println!("Number of signatures expected: {}", transaction.message.header().num_required_signatures);
+
+    // Serialize the transaction message to bytes for signing
+    let message_bytes = transaction.message.serialize();
+    let base64_message_to_sign = base64::engine::general_purpose::STANDARD.encode(&message_bytes);
+    println!("Serialized Transaction Message (Base64): {}", base64_message_to_sign);
+
+    // Send the serialized message to the ESP32 and get the base64-encoded signature
+    let base64_signature = send_to_esp32_and_get_signature(&mut port, &base64_message_to_sign)?;
+
+    // Decode the base64 signature into bytes and convert to a Solana Signature
     let signature_bytes = base64::engine::general_purpose::STANDARD.decode(&base64_signature)?;
     let signature = Signature::try_from(signature_bytes.as_slice())?;
 
-    transaction.signatures = vec![signature];
-    let txid = client.send_and_confirm_transaction(&transaction)?;
-    println!("Transaction submitted with ID: {}", txid);
+    // Verify that the transaction expects exactly one signature
+    if transaction.signatures.len() != 1 {
+        return Err(anyhow::anyhow!("Expected 1 signature slot, found {}", transaction.signatures.len()));
+    }
+
+    // Assign the signature received from ESP32 to the transaction
+    transaction.signatures[0] = signature;
+
+    // Send the signed transaction to the Solana network
+    let signature = client.send_transaction(&transaction)?;
+    println!("Transaction sent with signature: {}", signature);
+
+    // Confirm the transaction has been processed on the network
+    client.confirm_transaction(&signature)?;
+    println!("Transaction confirmed");
 
     Ok(())
 }
