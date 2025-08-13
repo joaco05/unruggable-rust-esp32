@@ -28,6 +28,7 @@ anyhow = "1"
 ed25519-dalek = { version = "2.1.1", default-features = false, features = ["rand_core"] }
 rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
 getrandom = { version = "0.2", features = ["custom"] }
+esp-idf-sys = { version = "0.36.1", features = ["binstart"] }
 bs58 = "0.5"
 base64 = "0.22"
 

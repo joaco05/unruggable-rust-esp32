@@ -9,6 +9,9 @@ use bs58;
 use base64;
 use base64::Engine;
 
+// Add imports for deep sleep and GPIO isolation from ESP-IDF sys bindings
+use esp_idf_sys::{rtc_gpio_isolate, esp_deep_sleep_start};
+
 fn load_or_generate_key(nvs: &mut EspNvs<NvsDefault>) -> anyhow::Result<SigningKey> {
     let key_name = "solana_key";
     let mut key_bytes = [0u8; 32];
@@ -75,7 +78,7 @@ fn main() -> anyhow::Result<()> {
                 let ch = byte[0] as char;
                 if ch == '\n' {
                     let input = buffer.trim();
-                    if input == "GET_PUBKEY" {  // Changed this line - removed the \n
+                    if input == "GET_PUBKEY" {
                         // During pubkey request: Double flash
                         for _ in 0..2 {
                             led.set_high()?;
@@ -143,12 +146,42 @@ fn main() -> anyhow::Result<()> {
                                 send_response(&mut uart, "ERROR:Invalid base64 encoding")?;
                             }
                         }
+                    } else if input == "SHUTDOWN" {
+                        // Shutdown command received: Prepare for safe disconnection by entering indefinite deep sleep
+                    
+                        // Step 1: Removed UART flush - unnecessary as writes are blocking and complete
+                    
+                        // Step 2: Turn off LED and signal shutdown with a long blink for user feedback
+                        led.set_high()?;
+                        esp_idf_svc::hal::delay::FreeRtos::delay_ms(1000); // 1-second blink to indicate shutdown starting
+                        led.set_low()?;
+                    
+                        // Step 3: Isolate GPIOs to minimize current leakage in sleep
+                        // GPIO0 (button) and GPIO2 (LED) are RTC GPIOs; isolate them as they're not needed for wake-up
+                        unsafe {
+                            rtc_gpio_isolate(0);
+                            rtc_gpio_isolate(2);
+                        }
+                    
+                        // Optional: If other GPIOs are used, isolate them similarly.
+                        // UART pins (GPIO1 TX, GPIO3 RX) are not RTC GPIOs, so no isolation needed; they'll be powered down automatically.
+                    
+                        // New: Send confirmation response before sleeping
+                        send_response(&mut uart, "SHUTDOWN_OK")?;
+                    
+                        // Step 4: Enter deep sleep indefinitely (no wake-up sources configured)
+                        // This halts execution; device is now safe to disconnect
+                        unsafe {
+                            esp_deep_sleep_start();
+                        }
+
+                        // Code after this won't execute; the device resets on wake-up/power cycle
                     } else if !input.is_empty() {
                         // Unknown command - log what we received for debugging
                         println!("Received unknown command: '{}'", input);
                         send_response(&mut uart, "ERROR:Unknown command")?;
                     }
-                    buffer.clear();
+                    buffer.clear(); 
                 } else {
                     buffer.push(ch);
                 }

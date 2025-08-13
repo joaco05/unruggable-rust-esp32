@@ -102,6 +102,46 @@ fn send_to_esp32_and_get_signature(port: &mut Box<dyn SerialPort>, base64_messag
     }
 }
 
+/// Sends the SHUTDOWN command to the ESP32 to prepare it for safe disconnection
+fn shutdown_esp32(port: &mut Box<dyn SerialPort>) -> Result<()> {
+    // Send "SHUTDOWN" with a newline as expected by ESP32
+    port.write_all("SHUTDOWN\n".as_bytes())?;
+    port.flush()?;
+    println!("Sent SHUTDOWN command to ESP32");
+
+    // Read the confirmation response until newline (similar to other reads)
+    let mut buffer = String::new();
+    let mut byte = [0u8; 1];
+    let mut timeout_count = 0;
+    while timeout_count < 10 {
+        match port.read(&mut byte) {
+            Ok(1) => {
+                let ch = byte[0] as char;
+                if ch == '\n' {
+                    break;
+                }
+                buffer.push(ch);
+            }
+            Ok(0) => {
+                timeout_count += 1;
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            Err(_) => {
+                timeout_count += 1;
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            Ok(n) => unreachable!("Unexpected read size: {}", n),
+        }
+    }
+    let response = buffer.trim();
+    if response == "SHUTDOWN_OK" {
+        println!("Received shutdown confirmation from ESP32: {}", response);
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("Invalid or no shutdown confirmation from ESP32: {}", response))
+    }
+}
+
 fn main() -> Result<()> {
     // Initialize the Solana RPC client
     let client = RpcClient::new(RPC_URL.to_string());
@@ -161,6 +201,9 @@ fn main() -> Result<()> {
     // Confirm the transaction has been processed on the network
     client.confirm_transaction(&signature)?;
     println!("Transaction confirmed");
+
+    // Shutdown the ESP32 after transaction confirmation
+    shutdown_esp32(&mut port)?;
 
     Ok(())
 }
