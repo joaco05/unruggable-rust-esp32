@@ -12,6 +12,9 @@ use base64::Engine;
 // Add imports for deep sleep and GPIO isolation from ESP-IDF sys bindings
 use esp_idf_sys::{rtc_gpio_isolate, esp_deep_sleep_start};
 
+#[cfg(feature = "twofa")]
+mod twofa;
+
 fn load_or_generate_key(nvs: &mut EspNvs<NvsDefault>) -> anyhow::Result<SigningKey> {
     let key_name = "solana_key";
     let mut key_bytes = [0u8; 32];
@@ -35,6 +38,16 @@ fn send_response(uart: &mut UartDriver, response: &str) -> anyhow::Result<()> {
         written += uart.write(&data[written..])?;
     }
     Ok(())
+}
+
+#[cfg(feature = "twofa")]
+fn device_unix_time() -> u64 {
+    twofa::TwoFa::device_unix_time()
+}
+
+#[cfg(not(feature = "twofa"))]
+fn device_unix_time() -> u64 {
+    0
 }
 
 fn main() -> anyhow::Result<()> {
@@ -61,7 +74,7 @@ fn main() -> anyhow::Result<()> {
 
     // Configure built-in LED on GPIO 2 as output
     let mut led = PinDriver::output(peripherals.pins.gpio2)?;
-    
+
     // Initial LED state - off when idle
     led.set_low()?;
 
@@ -71,6 +84,10 @@ fn main() -> anyhow::Result<()> {
     led.set_low()?;
 
     let mut buffer = String::new();
+
+    #[cfg(feature = "twofa")]
+    let mut unlocked_until: u64 = 0;
+
     loop {
         let mut byte = [0u8; 1];
         match uart.read(&mut byte, 1000) {
@@ -78,6 +95,8 @@ fn main() -> anyhow::Result<()> {
                 let ch = byte[0] as char;
                 if ch == '\n' {
                     let input = buffer.trim();
+
+                    // ======== PUBKEY ========
                     if input == "GET_PUBKEY" {
                         // During pubkey request: Double flash
                         for _ in 0..2 {
@@ -86,57 +105,173 @@ fn main() -> anyhow::Result<()> {
                             led.set_low()?;
                             esp_idf_svc::hal::delay::FreeRtos::delay_ms(150);
                         }
-                        
-                        // Send response in the format our protocol expects
                         let response = format!("PUBKEY:{}", pubkey_base58);
                         send_response(&mut uart, &response)?;
+
+                    // ======== 2FA: OTP_BEGIN ========
+                    } else if input == "OTP_BEGIN" {
+                        #[cfg(feature = "twofa")]
+                        {
+                            match twofa::TwoFa::begin(&mut nvs) {
+                                Ok(b32) => {
+                                    // short blink
+                                    led.set_high()?;
+                                    esp_idf_svc::hal::delay::FreeRtos::delay_ms(180);
+                                    led.set_low()?;
+                                    let resp = format!(
+                                        "OTP_SECRET:{};ALGO=SHA1;DIGITS={};PERIOD={}",
+                                        b32, twofa::OTP_DIGITS, twofa::OTP_PERIOD
+                                    );
+                                    send_response(&mut uart, &resp)?;
+                                }
+                                Err(e) => {
+                                    for _ in 0..3 {
+                                        led.set_high()?;
+                                        esp_idf_svc::hal::delay::FreeRtos::delay_ms(120);
+                                        led.set_low()?;
+                                        esp_idf_svc::hal::delay::FreeRtos::delay_ms(120);
+                                    }
+                                    send_response(&mut uart, &format!("ERROR:{}", e))?;
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "twofa"))]
+                        {
+                            send_response(&mut uart, "ERROR:OTP_DISABLED")?;
+                        }
+
+                    // ======== 2FA: OTP_CONFIRM:CODE[:UNIX] ========
+                    } else if input.starts_with("OTP_CONFIRM:") {
+                        #[cfg(feature = "twofa")]
+                        {
+                            let rest = &input["OTP_CONFIRM:".len()..];
+                            let parts: Vec<&str> = rest.split(':').collect();
+                            let code = parts.get(0).copied().unwrap_or("");
+                            let unix = parts.get(1).and_then(|s| s.parse::<u64>().ok());
+                            match twofa::TwoFa::confirm(&mut nvs, code, unix) {
+                                Ok(()) => {
+                                    // confirm blink (short, short, long)
+                                    led.set_high()?;
+                                    esp_idf_svc::hal::delay::FreeRtos::delay_ms(120);
+                                    led.set_low()?;
+                                    esp_idf_svc::hal::delay::FreeRtos::delay_ms(120);
+                                    led.set_high()?;
+                                    esp_idf_svc::hal::delay::FreeRtos::delay_ms(300);
+                                    led.set_low()?;
+                                    send_response(&mut uart, "OTP_CONFIRMED")?;
+                                }
+                                Err(_) => {
+                                    for _ in 0..4 {
+                                        led.set_high()?;
+                                        esp_idf_svc::hal::delay::FreeRtos::delay_ms(80);
+                                        led.set_low()?;
+                                        esp_idf_svc::hal::delay::FreeRtos::delay_ms(80);
+                                    }
+                                    send_response(&mut uart, "ERROR:OTP_BAD_CODE")?;
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "twofa"))]
+                        {
+                            send_response(&mut uart, "ERROR:OTP_DISABLED")?;
+                        }
+
+                    // ======== 2FA: OTP_UNLOCK:CODE[:UNIX] ========
+                    } else if input.starts_with("OTP_UNLOCK:") {
+                        #[cfg(feature = "twofa")]
+                        {
+                            let rest = &input["OTP_UNLOCK:".len()..];
+                            let parts: Vec<&str> = rest.split(':').collect();
+                            let code = parts.get(0).copied().unwrap_or("");
+                            let unix = parts.get(1).and_then(|s| s.parse::<u64>().ok());
+
+                            match twofa::TwoFa::unlock(&mut nvs, code, unix) {
+                                Ok(until) => {
+                                    unlocked_until = until;
+                                    // Two short + one long blink
+                                    led.set_high()?;
+                                    esp_idf_svc::hal::delay::FreeRtos::delay_ms(120);
+                                    led.set_low()?;
+                                    esp_idf_svc::hal::delay::FreeRtos::delay_ms(120);
+                                    led.set_high()?;
+                                    esp_idf_svc::hal::delay::FreeRtos::delay_ms(120);
+                                    led.set_low()?;
+                                    esp_idf_svc::hal::delay::FreeRtos::delay_ms(120);
+                                    led.set_high()?;
+                                    esp_idf_svc::hal::delay::FreeRtos::delay_ms(350);
+                                    led.set_low()?;
+                                    let resp = format!("UNLOCKED_UNTIL:{}", unlocked_until);
+                                    send_response(&mut uart, &resp)?;
+                                }
+                                Err(_) => {
+                                    for _ in 0..4 {
+                                        led.set_high()?;
+                                        esp_idf_svc::hal::delay::FreeRtos::delay_ms(80);
+                                        led.set_low()?;
+                                        esp_idf_svc::hal::delay::FreeRtos::delay_ms(80);
+                                    }
+                                    send_response(&mut uart, "ERROR:OTP_BAD_CODE")?;
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "twofa"))]
+                        {
+                            send_response(&mut uart, "ERROR:OTP_DISABLED")?;
+                        }
+
+                    // ======== SIGN (gated by 2FA window if enabled) ========
                     } else if input.starts_with("SIGN:") {
+                        // If 2FA is enabled, require unlocked session
+                        #[cfg(feature = "twofa")]
+                        {
+                            let now = twofa::TwoFa::device_unix_time();
+                            if now > unlocked_until {
+                                for _ in 0..3 {
+                                    led.set_high()?;
+                                    esp_idf_svc::hal::delay::FreeRtos::delay_ms(100);
+                                    led.set_low()?;
+                                    esp_idf_svc::hal::delay::FreeRtos::delay_ms(100);
+                                }
+                                send_response(&mut uart, "ERROR:LOCKED")?;
+                                buffer.clear();
+                                continue;
+                            }
+                        }
+
                         // Extract the base64 message after "SIGN:"
                         let base64_message = &input[5..];
                         match base64::engine::general_purpose::STANDARD.decode(base64_message) {
                             Ok(message_bytes) => {
-                                // Waiting for button: Fast blinking pattern
+                                // Waiting for the BOOT button: fast blink until pressed
                                 let mut led_state = false;
-                                
-                                // Wait for the BOOT button to be pressed
                                 while !button.is_low() {
-                                    // Toggle LED state every 200ms for a fast blink pattern
                                     led_state = !led_state;
-                                    if led_state {
-                                        led.set_high()?;
-                                    } else {
-                                        led.set_low()?;
-                                    }
+                                    if led_state { led.set_high()?; } else { led.set_low()?; }
                                     esp_idf_svc::hal::delay::FreeRtos::delay_ms(200);
                                 }
-                                
-                                // Sign the message (no LED change during signing as it's quick)
+
+                                // Sign
                                 let signature = signing_key.sign(&message_bytes);
                                 let signature_bytes = signature.to_bytes();
                                 let base64_signature = base64::engine::general_purpose::STANDARD.encode(&signature_bytes);
-                                
-                                // Success: Triple flash with longer third pulse
+
+                                // Success: triple flash with longer third
                                 led.set_high()?;
                                 esp_idf_svc::hal::delay::FreeRtos::delay_ms(150);
                                 led.set_low()?;
                                 esp_idf_svc::hal::delay::FreeRtos::delay_ms(150);
-                                
                                 led.set_high()?;
                                 esp_idf_svc::hal::delay::FreeRtos::delay_ms(150);
                                 led.set_low()?;
                                 esp_idf_svc::hal::delay::FreeRtos::delay_ms(150);
-                                
-                                // Third, longer flash
                                 led.set_high()?;
-                                esp_idf_svc::hal::delay::FreeRtos::delay_ms(450); // 3x longer
+                                esp_idf_svc::hal::delay::FreeRtos::delay_ms(450);
                                 led.set_low()?;
-                                
-                                // Send the response in the format our protocol expects
+
                                 let response = format!("SIGNATURE:{}", base64_signature);
                                 send_response(&mut uart, &response)?;
                             }
                             Err(_) => {
-                                // Error: Rapid blinking
                                 for _ in 0..5 {
                                     led.set_high()?;
                                     esp_idf_svc::hal::delay::FreeRtos::delay_ms(100);
@@ -146,42 +281,31 @@ fn main() -> anyhow::Result<()> {
                                 send_response(&mut uart, "ERROR:Invalid base64 encoding")?;
                             }
                         }
+
+                    // ======== SHUTDOWN ========
                     } else if input == "SHUTDOWN" {
-                        // Shutdown command received: Prepare for safe disconnection by entering indefinite deep sleep
-                    
-                        // Step 1: Removed UART flush - unnecessary as writes are blocking and complete
-                    
-                        // Step 2: Turn off LED and signal shutdown with a long blink for user feedback
+                        // Long blink then deep sleep
                         led.set_high()?;
-                        esp_idf_svc::hal::delay::FreeRtos::delay_ms(1000); // 1-second blink to indicate shutdown starting
+                        esp_idf_svc::hal::delay::FreeRtos::delay_ms(1000);
                         led.set_low()?;
-                    
-                        // Step 3: Isolate GPIOs to minimize current leakage in sleep
-                        // GPIO0 (button) and GPIO2 (LED) are RTC GPIOs; isolate them as they're not needed for wake-up
+
                         unsafe {
                             rtc_gpio_isolate(0);
                             rtc_gpio_isolate(2);
                         }
-                    
-                        // Optional: If other GPIOs are used, isolate them similarly.
-                        // UART pins (GPIO1 TX, GPIO3 RX) are not RTC GPIOs, so no isolation needed; they'll be powered down automatically.
-                    
-                        // New: Send confirmation response before sleeping
+
                         send_response(&mut uart, "SHUTDOWN_OK")?;
-                    
-                        // Step 4: Enter deep sleep indefinitely (no wake-up sources configured)
-                        // This halts execution; device is now safe to disconnect
                         unsafe {
                             esp_deep_sleep_start();
                         }
 
-                        // Code after this won't execute; the device resets on wake-up/power cycle
                     } else if !input.is_empty() {
-                        // Unknown command - log what we received for debugging
+                        // Unknown command
                         println!("Received unknown command: '{}'", input);
                         send_response(&mut uart, "ERROR:Unknown command")?;
                     }
-                    buffer.clear(); 
+
+                    buffer.clear();
                 } else {
                     buffer.push(ch);
                 }

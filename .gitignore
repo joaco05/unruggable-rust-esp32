@@ -14,3 +14,6 @@ folders.txt
 /squads_quickstart-ts
 /squads-go
 /squads-windsurf
+
+/twofa/totp-setup.svg
+/twofa/target

@@ -1,0 +1,20 @@
+[package]
+name = "twofa"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "twofa"
+
+[dependencies]
+anyhow = "1"
+serialport = "4"
+clap = { version = "4", features = ["derive"] }
+qrcode = "0.12"
+data-encoding = "2.9"
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
+bs58 = "0.5"
+ed25519-dalek = { version = "2.1.1", default-features = false }
+urlencoding = "2"

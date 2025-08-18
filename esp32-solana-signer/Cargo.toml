@@ -20,6 +20,13 @@ opt-level = "z"
 [features]
 default = []
 experimental = ["esp-idf-svc/experimental"]
+# Enable TOTP-based 2FA support
+twofa = [
+  "dep:data-encoding",
+  "dep:hmac",
+  "dep:sha1",
+  "dep:subtle"
+]
 
 [dependencies]
 log = "0.4"
@@ -31,6 +38,12 @@ getrandom = { version = "0.2", features = ["custom"] }
 esp-idf-sys = { version = "0.36.1", features = ["binstart"] }
 bs58 = "0.5"
 base64 = "0.22"
+
+# 2FA (TOTP) deps are optional; pulled in by `--features twofa`
+data-encoding = { version = "2.9", optional = true }
+hmac           = { version = "0.12", optional = true }
+sha1           = { version = "0.10", optional = true }
+subtle         = { version = "2.6", optional = true }
 
 [build-dependencies]
 embuild = "0.33"
