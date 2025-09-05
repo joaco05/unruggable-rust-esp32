@@ -36,7 +36,7 @@ The ESP32 acts as a secure element that never exposes the private key, requiring
 
 1. Install the Rust toolchain for ESP32:
 ```bash
-cargo install espup
+cargo install espup --locked
 espup install
 . $HOME/export-esp.sh
 ```
