@@ -45,6 +45,7 @@ espup install
 ```bash
 cd esp32-solana-signer
 cargo +esp build
+cargo install espflash --locked
 espflash flash target/xtensa-esp32-espidf/debug/esp32-solana-signer --port /dev/tty.usbserial-0001
 ```
 
