@@ -11,12 +11,12 @@ use serialport::SerialPort;
 use std::str::FromStr;
 use base64::Engine;
 use anyhow::Result;
-
 // Constants for serial port, RPC URL, recipient public key, and lamports to send
-const SERIAL_PORT: &str = "/dev/tty.usbserial-0001";
-const RPC_URL: &str = "api";
-const RECIPIENT_PUBLIC_KEY: &str = "6tBou5MHL5aWpDy6cgf3wiwGGK2mR8qs68ujtpaoWrf2";
-const LAMPORTS_TO_SEND: u64 = 1_000_000;
+// FIXME: Change this to the correct serial port for your system.
+const SERIAL_PORT: &str = "/dev/ttyUSB0";
+const RPC_URL: &str = "https://api.devnet.solana.com";
+const RECIPIENT_PUBLIC_KEY: &str = "aQQjEjpLuDGq7f7dHC2uqaQt5QWcdYFgvpro74V66hD";
+const LAMPORTS_TO_SEND: u64 = 2_000_000;
 
 /// Retrieves the public key from the ESP32 board via serial communication
 fn get_esp32_public_key(port: &mut Box<dyn SerialPort>) -> Result<Pubkey> {
@@ -68,10 +68,15 @@ fn send_to_esp32_and_get_signature(port: &mut Box<dyn SerialPort>, base64_messag
     port.flush()?;
     println!("Sent to ESP32: {}", sign_command);
 
+    // Clear the input buffer to ensure we read the new response
+    port.clear(serialport::ClearBuffer::Input)?;
+
     // Rest of your function remains unchanged
     let mut buffer = String::new();
     let mut byte = [0u8; 1];
     let mut timeout_count = 0;
+
+
     while timeout_count < 10 {
         match port.read(&mut byte) {
             Ok(1) => {
@@ -147,9 +152,15 @@ fn main() -> Result<()> {
     let client = RpcClient::new(RPC_URL.to_string());
 
     // Open the serial port to communicate with the ESP32
-    let mut port = serialport::new(SERIAL_PORT, 115_200)
+    let mut port = match serialport::new(SERIAL_PORT, 115_200)
         .timeout(std::time::Duration::from_secs(1))
-        .open()?;
+        .open() {
+            Ok(port) => port,
+            Err(e) => {
+                eprintln!("Failed to open serial port '{}': {}", SERIAL_PORT, e);
+                return Err(e.into());
+            }
+        };
 
     // Get the ESP32 public key, which will be the fee payer and signer
     let esp32_pubkey = get_esp32_public_key(&mut port)?;
