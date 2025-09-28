@@ -30,7 +30,7 @@ twofa = [
 
 [dependencies]
 log = "0.4"
-esp-idf-svc = { version = "0.51", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
+esp-idf-svc = { version = "0.51", features = ["critical-section"] }
 anyhow = "1"
 ed25519-dalek = { version = "2.1.1", default-features = false, features = ["rand_core"] }
 rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
@@ -38,6 +38,7 @@ getrandom = { version = "0.2", features = ["custom"] }
 esp-idf-sys = { version = "0.36.1", features = ["binstart"] }
 bs58 = "0.5"
 base64 = "0.22"
+borsh = { version = "0.10", default-features = false }
 
 # 2FA (TOTP) deps are optional; pulled in by `--features twofa`
 data-encoding = { version = "2.9", optional = true }
