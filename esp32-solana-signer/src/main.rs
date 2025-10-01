@@ -9,8 +9,8 @@ use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use esp_idf_svc::sys::ESP_ERR_TIMEOUT;
 use rand_core::OsRng;
 
-// Add imports for deep sleep and GPIO isolation from ESP-IDF sys bindings
-use esp_idf_sys::{esp_deep_sleep_start, rtc_gpio_isolate};
+// Add imports for deep sleep from ESP-IDF sys bindings
+use esp_idf_sys::esp_deep_sleep_start;
 
 #[cfg(feature = "twofa")]
 mod twofa;
@@ -130,6 +130,7 @@ fn device_unix_time() -> u64 {
 }
 
 #[cfg(not(feature = "twofa"))]
+#[allow(dead_code)]
 fn device_unix_time() -> u64 {
     0
 }
@@ -145,19 +146,19 @@ fn main() -> anyhow::Result<()> {
 
     let mut uart = UartDriver::new(
         peripherals.uart0,
-        peripherals.pins.gpio1,
-        peripherals.pins.gpio3,
+        peripherals.pins.gpio21, // ESP32-C3 UART0 TX
+        peripherals.pins.gpio20, // ESP32-C3 UART0 RX
         Option::<esp_idf_svc::hal::gpio::AnyIOPin>::None,
         Option::<esp_idf_svc::hal::gpio::AnyIOPin>::None,
         &Default::default(),
     )?;
 
     // Configure BOOT button (GPIO 0) as input with pull-up
-    let mut button = PinDriver::input(peripherals.pins.gpio0)?;
+    let mut button = PinDriver::input(peripherals.pins.gpio9)?;
     button.set_pull(Pull::Up)?;
 
-    // Configure built-in LED on GPIO 2 as output
-    let mut led = PinDriver::output(peripherals.pins.gpio2)?;
+    // Configure built-in LED on GPIO 8 as output (ESP32-C3 built-in LED)
+    let mut led = PinDriver::output(peripherals.pins.gpio8)?;
 
     // Initial LED state - off when idle
     led.set_low()?;
@@ -425,11 +426,6 @@ fn main() -> anyhow::Result<()> {
                         led.set_high()?;
                         esp_idf_svc::hal::delay::FreeRtos::delay_ms(1000);
                         led.set_low()?;
-
-                        unsafe {
-                            rtc_gpio_isolate(0);
-                            rtc_gpio_isolate(2);
-                        }
 
                         send_response(&mut uart, "SHUTDOWN_OK")?;
                         unsafe {
